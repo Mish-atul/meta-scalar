@@ -1,0 +1,2 @@
+# Generated placeholder lock file for OpenEnv validation.
+# Run `uv lock` in CI or release pipeline to pin transitive dependencies.

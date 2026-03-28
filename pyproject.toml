@@ -1,0 +1,26 @@
+[project]
+name = "support-triage-env"
+version = "0.1.0"
+description = "OpenEnv-compatible customer support triage environment"
+readme = "files/README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openenv-core>=0.2.0",
+  "fastapi>=0.104.0",
+  "uvicorn>=0.24.0",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.0",
+  "httpx>=0.25.0",
+  "openai>=1.0.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

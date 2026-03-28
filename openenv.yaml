@@ -1,0 +1,12 @@
+name: support-triage-env
+description: Customer support email triage environment
+version: 0.1.0
+entrypoint: support_triage_env.server.app:app
+language: python
+tasks:
+  - id: 1
+    name: single-email-classification
+  - id: 2
+    name: batch-priority-routing
+  - id: 3
+    name: full-pipeline
