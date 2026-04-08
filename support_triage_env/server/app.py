@@ -28,8 +28,9 @@ def health_check() -> Dict[str, str]:
 
 
 @app.post("/reset")
-def reset(request: ResetRequest) -> Dict[str, Any]:
-    obs = env.reset(task_id=request.task_id, seed=request.seed)
+def reset(request: ResetRequest = None) -> Dict[str, Any]:
+    req = request or ResetRequest()
+    obs = env.reset(task_id=req.task_id, seed=req.seed)
     return obs.model_dump(mode="json")
 
 
