@@ -14,6 +14,15 @@ def test_health_endpoints() -> None:
     assert health.json()["status"] == "ok"
 
 
+def test_reset_empty_body() -> None:
+    """OpenEnv platform sends POST /reset with no body; must return 200."""
+    reset = client.post("/reset")
+    assert reset.status_code == 200
+    payload = reset.json()
+    assert payload["task_id"] == 1
+    assert "current_email" in payload
+
+
 def test_reset_step_state_contract() -> None:
     reset = client.post("/reset", json={"task_id": 1, "seed": 42})
     assert reset.status_code == 200

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -28,7 +28,9 @@ def health_check() -> Dict[str, str]:
 
 
 @app.post("/reset")
-def reset(request: ResetRequest) -> Dict[str, Any]:
+def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
+    if request is None:
+        request = ResetRequest()
     obs = env.reset(task_id=request.task_id, seed=request.seed)
     return obs.model_dump(mode="json")
 
