@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import sys
+import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from support_triage_env.client import TriageEnv
 from support_triage_env.models import ActionType, Category, Priority, Team, TriageAction
@@ -124,69 +126,6 @@ def _infer_stage(obs: Dict[str, Any], email_id: str, task_id: int, predicted_pri
     return "done"
 
 
-def _llm_action(client: OpenAI, model: str, obs: Dict[str, Any]) -> TriageAction | None:
-    prompt = (
-        "You are a support triage agent. Return exactly one JSON object with fields for a single action. "
-        "Allowed action_type values: classify,set_priority,route,draft_response,mark_duplicate,escalate,request_info,submit_triage. "
-        "Observation: " + json.dumps(obs)
-    )
-
-    try:
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": "Return valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        payload = _safe_json_action(completion.choices[0].message.content or "")
-        if not payload:
-            return None
-        return TriageAction.model_validate(payload)
-    except Exception:
-        return None
-
-
-def run_task(task_id: int, seed: int = 42) -> RunResult:
-    base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-    hf_token = os.getenv("HF_TOKEN")
-    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
-
-    env = TriageEnv(base_url=base_url)
-    obs = env.reset(task_id=task_id, seed=seed)
-
-    llm_client = OpenAI(base_url=base_url, api_key=hf_token) if hf_token else None
-    done = False
-    steps = 0
-    final_score = 0.0
-
-    while not done and steps < 80:
-        obs_dict = obs.model_dump(mode="json")
-        action = _llm_action(llm_client, model_name, obs_dict) if llm_client else None
-        if action is None:
-            action = _heuristic_action(obs_dict)
-
-        if _all_emails_touched(obs_dict):
-            action = TriageAction(action_type=ActionType.SUBMIT_TRIAGE)
-
-        obs, reward, done, info = env.step(action)
-        steps += 1
-        if done:
-            final_score = float(info.get("final_score", reward))
-
-    env.close()
-    return RunResult(task_id=task_id, score=final_score, steps=steps, completed=done)
-
-
-def main() -> None:
-    os.environ.setdefault("PYTHONHASHSEED", "0")
-    results = [run_task(1, seed=42), run_task(2, seed=42), run_task(3, seed=42)]
-    for result in results:
-        print(f"Task {result.task_id} score: {result.score:.3f} | steps={result.steps} | completed={result.completed}")
-
-
 def _all_emails_touched(obs: Dict[str, Any]) -> bool:
     snapshot = obs.get("inbox_snapshot", [])
     if not snapshot:
@@ -196,6 +135,102 @@ def _all_emails_touched(obs: Dict[str, Any]) -> bool:
         if not {"classify", "set_priority", "route"}.issubset(actions):
             return False
     return True
+
+
+def wait_for_server(base_url: str, max_wait: int = 120) -> bool:
+    """Poll the server health endpoint until it responds or timeout."""
+    import httpx
+
+    deadline = time.time() + max_wait
+    delay = 1.0
+    while time.time() < deadline:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get(f"{base_url.rstrip('/')}/health")
+                if resp.status_code == 200:
+                    print(f"[INFO] Server is ready at {base_url}", flush=True)
+                    return True
+        except Exception:
+            pass
+        print(f"[INFO] Waiting for server at {base_url} (retry in {delay:.0f}s)...", flush=True)
+        time.sleep(delay)
+        delay = min(delay * 1.5, 10.0)
+    return False
+
+
+def run_task(task_id: int, seed: int = 42) -> RunResult:
+    base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+    env = TriageEnv(base_url=base_url)
+
+    # Retry reset with backoff in case of transient connection errors
+    obs = None
+    last_err = None
+    for attempt in range(5):
+        try:
+            obs = env.reset(task_id=task_id, seed=seed)
+            break
+        except Exception as exc:
+            last_err = exc
+            wait = 2 ** attempt
+            print(f"[WARN] env.reset(task_id={task_id}) attempt {attempt+1} failed: {exc}. Retrying in {wait}s...", flush=True)
+            time.sleep(wait)
+
+    if obs is None:
+        print(f"[ERROR] env.reset(task_id={task_id}) failed after retries: {last_err}", flush=True)
+        env.close()
+        return RunResult(task_id=task_id, score=0.0, steps=0, completed=False)
+
+    done = False
+    steps = 0
+    final_score = 0.0
+
+    while not done and steps < 80:
+        try:
+            obs_dict = obs.model_dump(mode="json")
+        except Exception:
+            obs_dict = obs if isinstance(obs, dict) else {}
+
+        action = _heuristic_action(obs_dict)
+
+        if _all_emails_touched(obs_dict):
+            action = TriageAction(action_type=ActionType.SUBMIT_TRIAGE)
+
+        try:
+            obs, reward, done, info = env.step(action)
+            steps += 1
+            if done:
+                final_score = float(info.get("final_score", reward))
+        except Exception as exc:
+            print(f"[WARN] env.step() failed at step {steps}: {exc}", flush=True)
+            steps += 1
+            break
+
+    env.close()
+    return RunResult(task_id=task_id, score=final_score, steps=steps, completed=done)
+
+
+def main() -> None:
+    os.environ.setdefault("PYTHONHASHSEED", "0")
+    base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+    # Wait for the environment server container to become ready
+    if not wait_for_server(base_url, max_wait=120):
+        print(f"[ERROR] Server at {base_url} did not become ready in time.", flush=True)
+        sys.exit(1)
+
+    results = []
+    for tid in [1, 2, 3]:
+        try:
+            result = run_task(tid, seed=42)
+            results.append(result)
+        except Exception as exc:
+            print(f"[ERROR] Task {tid} raised unhandled exception: {exc}", flush=True)
+            traceback.print_exc()
+            results.append(RunResult(task_id=tid, score=0.0, steps=0, completed=False))
+
+    for result in results:
+        print(f"Task {result.task_id} score: {result.score:.3f} | steps={result.steps} | completed={result.completed}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+import traceback
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from support_triage_env.models import TriageAction
@@ -28,21 +30,29 @@ def health_check() -> Dict[str, str]:
 
 
 @app.post("/reset")
-def reset(request: ResetRequest = None) -> Dict[str, Any]:
-    req = request or ResetRequest()
-    obs = env.reset(task_id=req.task_id, seed=req.seed)
-    return obs.model_dump(mode="json")
+def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
+    try:
+        req = request if request is not None else ResetRequest()
+        obs = env.reset(task_id=req.task_id, seed=req.seed)
+        return obs.model_dump(mode="json")
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.post("/step")
 def step(action: TriageAction) -> Dict[str, Any]:
-    obs, reward, done, info = env.step(action)
-    return {
-        "observation": obs.model_dump(mode="json"),
-        "reward": reward,
-        "done": done,
-        "info": info,
-    }
+    try:
+        obs, reward, done, info = env.step(action)
+        return {
+            "observation": obs.model_dump(mode="json"),
+            "reward": reward,
+            "done": done,
+            "info": info,
+        }
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.get("/state")
